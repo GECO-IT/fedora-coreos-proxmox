@@ -1,7 +1,18 @@
 # fedora-coreos-proxmox
 
-Fedora CoreOS template on proxmox
+Fedora CoreOS template for proxmox
 
+
+### CloudInit
+
+Only these parameters are supported by our cloudinit wrapper :
+
+- User (only one default = admin)
+- Passwd
+- DNS domain
+- DNS Servers
+- SSH public key
+- IP Config (ipv4 only)
 
 ### Script output
 ```
