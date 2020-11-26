@@ -1,0 +1,12 @@
+# ---> geco-gitignore
+#Geco-it Custom Git-Ignore
+
+#Remove debian packages
+*.deb
+
+#Editor's swap files
+#Gay
+*~
+#Not gay
+*.swp
+
