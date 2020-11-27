@@ -75,6 +75,9 @@ Then we modify the configuration of the vm to add the loading of the ignition fi
   <img src="./screenshot/fcos_proxmox_first_start.png" alt="">
 </p>
 
+During the first boot the vm will install qemu-agent and will restart.
+Warning, for that the network must be operational
+
 ## CloudInit
 
 Only these parameters are supported by our cloudinit wrapper:
