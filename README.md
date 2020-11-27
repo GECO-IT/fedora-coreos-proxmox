@@ -1,6 +1,6 @@
 # fedora-coreos-proxmox
 
-Fedora CoreOS template for proxmox
+Fedora CoreOS template for proxmox with cloudinit support
 
 ## Create FCOS VM Template
 
