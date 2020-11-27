@@ -1,0 +1,357 @@
+# motd script
+    - path: /usr/local/bin/geco-motd
+      mode: 0755
+      contents:
+        inline: |
+          #!/bin/bash
+          
+          OUT=/etc/console-login-helper-messages/motd.d/22_geco.motd
+          
+          echo -e "\nWelcome on a server powered by\n" > ${OUT}
+          echo -e '\e[33m    ______                      _ ______' >> ${OUT}
+          echo -e '\e[33m   / ____/__  _________        (_)_  __/' >> ${OUT}
+          echo -e '\e[33m  / / __/ _ \/ ___/ __ \  __   / / / /' >> ${OUT}
+          echo -e '\e[33m / /_/ /  __/ /__/ /_/ / |__| / / / /' >> ${OUT}
+          echo -e '\e[33m \____/\___/\___/\____/      /_/ /_/\n\n' >> ${OUT}
+          eval "$(grep -E "^(NAME=|VARIANT=)" /etc/os-release)" && echo -e "\e[33mOperating System:\e[0m ${NAME} ${VARIANT}" >> ${OUT}
+          eval "$(grep ^OSTREE_VERSION /etc/os-release)" && echo -e "\e[33mVersion:\e[0m ${OSTREE_VERSION}" >> ${OUT}
+          echo -e "\e[33mKernel:\e[0m $(uname -r)" >> ${OUT}
+          echo -ne "\e[33mCPU:\e[0m $(grep ^processor /proc/cpuinfo | wc -l)" >> ${OUT}
+          echo "$(grep "^model name" /proc/cpuinfo | head -n1 | awk -F: '{print $2}' | awk -F@ '{print $1}')" >> ${OUT}
+          echo -e "\e[33mRAM:\e[0m $(free | grep Mem | awk '{print $2}' | xargs -i expr {} / 1000 / 1000 | xargs -i printf '%.0fG\n' {})" >> ${OUT}
+          i=0; for disk in $(ls /dev/sd[a-z] /dev/vd[a-z] 2>/dev/null); do
+                lsblk > /dev/null 2>&1 || break
+                echo -e "\e[33mHDD${i} ($(basename ${disk})):\e[0m$(lsblk -n --nodeps ${disk} -o size)" >> ${OUT}
+                i=$((i+1))
+          done
+          echo -e "\n\e[33mHostname:\e[0m "$(hostname -f) >> ${OUT}  
+          sleep 1; echo -e "\e[33mIPv4 Address:\e[0m $(ip route get 8.8.8.8 | awk 'NR==1 {print $7}')" >> ${OUT}
+          echo -e "\e[33mPublic IPv4 Address:\e[0m $(curl https://ipv4.icanhazip.com)\n" >> ${OUT}
+
+# apply cloudinit script
+    - path: /usr/local/bin/geco-cloudinit
+      mode: 0755
+      contents:
+        inline: |
+          #!/bin/bash
+          #
+          #  Copyright (c) 2020 Geco-iT Team - All right reserved
+          #  Geco-iT <contact@geco-it.fr>
+          #
+          #  $Id: geco-cloudinit 2020-11-26 18:36:24Z cduchenoy $
+          #
+          #  Apply Basic Cloudinit Settings
+          #
+          # ===================================================================================
+          declare -r VERSION=1.2011
+
+          set -e
+          trap 'catch $?' EXIT
+
+          CIPATH=/run/cloudinit
+          YQ="yq read --exitStatus --printMode v --stripComments --"
+
+          # ===================================================================================
+          # functions()
+          catch() {
+            ${MOUNTED:-false} && umount ${CIPATH} && rmdir ${CIPATH}
+          }
+          mount | grep -q /run/cloudinit && MOUNTED=true # init
+
+          # use for vm clone
+          sysprep() {
+            echo "Remove all ssh system keys..."
+            rm -f /etc/ssh/ssh_host_*
+            
+            echo "Clean ostree database..."
+            rpm-ostree cleanup --base --pending --rollback --repomd
+
+            echo "Remove all local user..."
+            for user in $(awk -F: -v uiduser="1000" '{if ($3>=uiduser) print $1}' /etc/passwd); do
+              userdel --force --remove ${user}
+            done
+
+            echo "Purge all docker ressources..."
+            docker system prune --all --force
+
+            echo "Remove all network/machine settings..."
+            rm -f /var/lib/NetworkManager/*
+            echo "" > /etc/machine-id
+
+            echo "Purge all system logs..."
+            journalctl --rotate --vacuum-time=1s
+            systemctl stop systemd-journald*
+            rm -rf /var/log/journal/*
+            rm -rf /var/log/ssd/*
+
+            echo "Force run cloudinit on next reboot..."
+            echo "fake" > /var/.cloudinit
+
+            echo -e "\nShutdown now..."
+            poweroff
+
+            exit 0  
+          }
+          [[ "x${1}" == "xsysprep" ]]&& sysprep          
+
+          setup_yq() {
+            local VER=3.4.1
+
+            [[ -x /usr/bin/wget ]]&& download_command="wget --quiet --show-progress --output-document"  || download_command="curl -s --location --output"
+            [[ -x /usr/local/bin/yq ]]&& [[ "x$(/usr/local/bin/yq --version | awk '{print $NF}')" == "x${VER}" ]]&& return 0
+            echo "Setup yaml parser tools yq..."
+            rm -f /usr/local/bin/yq
+            ${download_command} /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/${VER}/yq_linux_amd64
+            chmod 755 /usr/local/bin/yq
+          }
+          setup_yq
+
+          # network
+          mask2cdr()
+          {
+            # Assumes there's no "255." after a non-255 byte in the mask
+            local x=${1##*255.}
+            set -- 0^^^128^192^224^240^248^252^254^ $(( (${#1} - ${#x})*2 )) ${x%%.*}
+            x=${1%%$3*}
+            echo $(( $2 + (${#x}/4) ))
+          }
+
+          cdr2mask()
+          {
+            # Number of args to shift, 255..255, first non-255 byte, zeroes
+            set -- $(( 5 - ($1 / 8) )) 255 255 255 255 $(( (255 << (8 - ($1 % 8))) & 255 )) 0 0 0
+            [[ $1 -gt 1 ]] && shift $1 || shift
+            echo ${1-0}.${2-0}.${3-0}.${4-0}
+          }
+
+          # ===================================================================================
+          # main()
+          [[ ! -e /dev/sr0 ]]&& {
+            echo "[INFO]: Cloudinit: any drive found..."
+            exit 0
+          }
+          mkdir -p ${CIPATH}
+          mount -o ro /dev/sr0 ${CIPATH}
+          MOUNTED=true
+
+          [[ ! -e ${CIPATH}/meta-data ]]&& {
+            echo "[ERROR]: Cloudinit: nocloud metada not found..."
+            exit 1
+          }
+
+          cloudinit_instanceid="$(${YQ} ${CIPATH}/meta-data 'instance-id')"
+          if [[ -e /var/.cloudinit ]]
+          then
+            [[ "x$(cat /var/.cloudinit)" == "x${cloudinit_instanceid}" ]]&& {
+            echo "[INFO]: Cloudinit any change detected..."
+            exit 0
+            }
+
+            # hostname
+            NEWHOSTNAME="$(${YQ} ${CIPATH}/user-data 'hostname' 2> /dev/null)"
+            [[ -n "${NEWHOSTNAME}" ]]&& [[ "x${NEWHOSTNAME,,}" != "x$(hostname)" ]]&& {
+              echo -n "[INFO]: Cloudinit: set hostname to ${NEWHOSTNAME,,}... "
+              hostnamectl set-hostname ${NEWHOSTNAME,,} || { echo "[failed]"; exit 1; }
+              MUST_REBOOT=true
+              echo "[done]"
+            }
+            # username
+            NEWUSERNAME="$(${YQ} ${CIPATH}/user-data 'user' 2> /dev/null)" || true # cant be empty if no cloudinit user defined
+            [[ "x${NEWUSERNAME}" == "x" ]] && NEWUSERNAME="admin" # NEWUSERNAME="core" use "admin" on geco-template
+            getent passwd ${NEWUSERNAME} &> /dev/null || {
+              echo -n "[INFO]: Cloudinit: add sytem user: ${NEWUSERNAME}... "
+              useradd --comment "Geco-iT CoreOS Administrator" --create-home \
+                      --groups adm,wheel,sudo,systemd-journal,docker ${NEWUSERNAME} &> /dev/null || { echo "[failed]"; exit 1; }
+              echo "[done]"
+            }
+            # passwd
+            NEWPASSWORD="$(${YQ} ${CIPATH}/user-data 'password' 2> /dev/null)"
+            [[ -n "${NEWPASSWORD}" ]]&& [[ "x${NEWPASSWORD}" != "x$(grep ^${NEWUSERNAME} /etc/shadow | awk -F: '{print $2}')" ]]&& {
+              echo -n "[INFO]: Cloudinit: set password for user ${NEWUSERNAME}... "
+              sed -e "/^${NEWUSERNAME}/d" -i /etc/shadow &> /dev/null || { echo "[failed]"; exit 1; }
+              echo "${NEWUSERNAME}:${NEWPASSWORD}:18000:0:99999:7:::" >> /etc/shadow || { echo "[failed]"; exit 1; }
+              chage --lastday "$(date +%Y-%m-%d)" ${NEWUSERNAME} &> /dev/null || { echo "[failed]"; exit 1; }
+              echo "[done]"
+            }
+            # ssh key
+            [[ -e /var/home/${NEWUSERNAME}/.ssh/authorized_keys.d/ignition ]] || {
+              install --directory --owner=${NEWUSERNAME} --group=${NEWUSERNAME} \
+                      --mode=0700 /var/home/${NEWUSERNAME}/.ssh &> /dev/null || { echo "[failed]"; exit 1; }
+              install --directory --owner=${NEWUSERNAME} --group=${NEWUSERNAME} \
+                      --mode=0700 /var/home/${NEWUSERNAME}/.ssh/authorized_keys.d &> /dev/null || { echo "[failed]"; exit 1; }
+              install --owner=${NEWUSERNAME} --group=${NEWUSERNAME} \
+                      --mode=0600 /dev/null /var/home/${NEWUSERNAME}/.ssh/authorized_keys.d/ignition &> /dev/null || { echo "[failed]"; exit 1; }
+            }
+            echo -n "[INFO]: Cloudinit: wrote ssh authorized keys file for user: ${NEWUSERNAME}... "
+            ${YQ} ${CIPATH}/user-data 'ssh_authorized_keys[*]' > /var/home/${NEWUSERNAME}/.ssh/authorized_keys.d/ignition 2> /dev/null || { echo "[failed]"; exit 1; }
+            echo "[done]"
+            # Network => ipv6: TODO
+            netcards="$(${YQ} ${CIPATH}/network-config 'config[*].name' 2> /dev/null | wc -l)"
+            nameservers="$(${YQ} ${CIPATH}/network-config "config[${netcards}].address[*]" 2> /dev/null | paste -s -d ";" -)"
+            searchdomain="$(${YQ} ${CIPATH}/network-config "config[${netcards}].search[*]" 2> /dev/null | paste -s -d ";" -)"
+            echo "[INFO]: Cloudinit: DNS Server=$nameservers - DNS Search=$searchdomain"
+            for (( i=O; i<${netcards}; i++ )); do
+              ipv4="" netmask="" gw="" macaddr="" # reset on each run
+              ipv4="$(${YQ} ${CIPATH}/network-config config[${i}].subnets[0].address 2> /dev/null)" || {
+                [[ -e /etc/NetworkManager/system-connections/net${i}.nmconnection ]]&& MUST_NETWORK_RELOAD=true
+                rm -f /etc/NetworkManager/system-connections/net${i}.nmconnection
+                continue # dhcp mode
+              }
+              netmask="$(${YQ} ${CIPATH}/network-config config[${i}].subnets[0].netmask 2> /dev/null)"
+              cidr="$(mask2cdr ${netmask})"
+              gw="$(${YQ} ${CIPATH}/network-config config[${i}].subnets[0].gateway 2> /dev/null)" || true # can be empty
+              macaddr="$(${YQ} ${CIPATH}/network-config config[${i}].mac_address 2> /dev/null)"
+              echo "[INFO]: Cloudinit: NET$i IPv4 Network: IP=${ipv4}/${netmask} - GW=${gw:-none} - MAC=${macaddr}"
+              rm -f /etc/NetworkManager/system-connections/default_connection.nmconnection # remove default connexion settings
+              if [[ -e /etc/NetworkManager/system-connections/net${i}.nmconnection ]]
+              then
+                [[ "x${ipv4}/${cidr}" != "x$(nmcli connection show net${i} 2> /dev/null | grep ^ipv4.addresses: | awk '{print $2}')" ]]&& {
+                  echo -n "[INFO]: Cloudinit: update Network config ipv4 for net${i}... "
+                  nmcli c modify net${i} ipv4.addresses "${ipv4}/${cidr}"
+                  MUST_NET_RECONFIG=true
+                  echo "[done]"
+                }
+                [[ "x${gw}" != "x$(nmcli connection show net${i} 2> /dev/null | grep ^ipv4.gateway: | awk '{print $2}')" ]] && {
+                  echo -n "[INFO]: Cloudinit: update Network config gateway for net${i}... "
+                  nmcli c modify net${i} ipv4.gateway "${gw}"
+                  MUST_NET_RECONFIG=true
+                  echo "[done]"
+                }
+                [[ "x${searchdomain}" != "x$(nmcli connection show net${i} 2> /dev/null | grep ^ipv4.dns-search: | awk '{print $2}' | tr ',' ';')" ]]&& {
+                  echo -n "[INFO]: Cloudinit: update Network config dns seach for net${i}... "
+                  nmcli c modify net${i} ipv4.dns-search "$(echo ${searchdomain} | tr ";" ",")"
+                  MUST_NET_RECONFIG=true
+                  echo "[done]"
+                }
+                [[ "x${nameservers}" != "x$(nmcli connection show net${i} 2> /dev/null | grep ^ipv4.dns: | awk '{print $2}' | tr ',' ';')" ]]&& {
+                  echo -n "[INFO]: Cloudinit: update Network config dns server for net${i}... "
+                  nmcli c modify net${i} ipv4.dns "$(echo ${nameservers} | tr ";" ",")"
+                  MUST_NET_RECONFIG=true
+                  echo "[done]"
+                }
+              else
+                echo -n "[INFO]: Cloudinit: wrote NetworkManager config for net${i}... "
+                install --mode=0600 /dev/null /etc/NetworkManager/system-connections/net${i}.nmconnection &> /dev/null || { echo "[failed]"; exit 1; }
+                echo -e "[connection]\ntype=ethernet\nid=net${i}\n#interface-name=eth${i}\n" >> /etc/NetworkManager/system-connections/net${i}.nmconnection
+                echo -e "[ethernet]\nmac-address=${macaddr}\n" >> /etc/NetworkManager/system-connections/net${i}.nmconnection
+                echo -e "[ipv4]\nmethod=manual\naddresses=${ipv4}/${netmask}\ngateway=${gw}\ndns=${nameservers}\ndns-search=${searchdomain}" >> /etc/NetworkManager/system-connections/net${i}.nmconnection
+                MUST_NET_RECONFIG=true
+                echo "[done]"
+              fi
+            done
+          fi
+
+          ${MUST_NET_RECONFIG:-false}&& {
+            echo "[INFO]: Cloudinit: must reload network..."
+            nmcli connection reload
+            nmcli networking off
+            nmcli networking on
+            systemctl restart geco-motd.service
+            systemctl restart console-login-helper-messages-motdgen.service
+          }
+
+          echo -n "[INFO]: Cloudinit: save instance id... "
+          echo "${cloudinit_instanceid}" > /var/.cloudinit
+          echo "[done]"
+          ${MUST_REBOOT:-false}&& {
+            echo "[INFO]: Cloudinit: applied settings; must reboot..."
+            /bin/systemctl --no-block reboot
+          }
+
+          exit 0 
+
+# geco-issue
+    - path: /etc/console-login-helper-messages/issue.d/00_geco.issue
+      mode: 0644
+      contents:
+        inline: |
+
+          Welcome on a server powered by
+
+            ,----.                                   ,--. ,--------.
+           '  .-./     ,---.   ,---.  ,---.  ,-----. `--' '--.  .--'
+           |  | .---. | .-. : | .--' | .-. | '-----' ,--.    |  |
+           '  '--'  | \\   --. \\ `--. ' '-' '         |  |    |  |
+            `------'   `----'  `---'  `---'          `--'    `--'
+            
+          .
+
+# kernel config
+    - path: /etc/sysctl.d/20-silence-audit.conf
+      mode: 0644      
+      contents:
+        inline: |
+          # Raise console message logging level from DEBUG (7) to WARNING (4)
+          # to hide audit messages from the interactive console
+          kernel.printk=4
+
+
+# geco-motd.service
+systemd:
+  units:
+    - name: geco-motd.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Geco-iT Motd
+        Before=console-login-helper-messages-motdgen.service
+        After=network-online.target
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/bin/geco-motd
+        RemainAfterExit=yes
+
+        [Install]
+        WantedBy=multi-user.target
+
+# geco-cloudinit: apply cloudinit settings on boot
+    - name: geco-cloudinit.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Geco-iT Cloudinit
+        Wants=network-online.target
+        After=network.target network-online.target
+ 
+        [Service]
+        Type=oneshot
+        TimeoutStartSec=0
+        ExecStart=/usr/local/bin/geco-cloudinit
+        RemainAfterExit=yes
+ 
+        [Install]
+        WantedBy=multi-user.target
+
+# qemu-guest-agent
+    - name: setup-qemu-guest-agent.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Geco-iT Setup Qemu Guest Agent
+        After=network-online.target
+        Require=network-online.target
+        ConditionKernelCommandLine=ignition.platform.id=qemu
+        ConditionPathExists=!/var/lib/qemu-guest-agent.stamp
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=/bin/rpm-ostree install qemu-guest-agent
+        ExecStart=/bin/touch /var/lib/qemu-guest-agent.stamp
+        ExecStart=/bin/systemctl --no-block reboot
+
+        [Install]
+        WantedBy=multi-user.target
+
+# fstrim
+    - name: fstrim.timer
+      enabled: true
+ 
+    - name: fstrim.service
+      dropins:
+        - name: override.conf
+          contents: |
+            [Service]
+            ExecStart=
+            ExecStart=/sbin/fstrim -av
