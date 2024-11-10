@@ -20,7 +20,8 @@ TEMPLATE_IGNITION="fcos-base-tmplt.yaml"
 
 # fcos version
 STREAMS=stable
-VERSION=32.20201018.3.0
+# Get the latest version
+VERSION=$(curl -s "https://builds.coreos.fedoraproject.org/streams/stable.json"| grep -A 10 "x86_64" | grep -A 10 "qemu" | grep "release" -m 1 | sed -E 's/.*"release": *"([^"]+)".*/\1/')
 PLATEFORM=qemu
 BASEURL=https://builds.coreos.fedoraproject.org
 
