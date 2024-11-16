@@ -18,12 +18,15 @@ VMDISK_OPTIONS=",discard=on"
 
 TEMPLATE_IGNITION="fcos-base-tmplt.yaml"
 
-# fcos version
+# fcos version - stable, next, or testing
 STREAMS=stable
+PLATFORM=qemu
 # Get the latest version
-VERSION=$(curl -s "https://builds.coreos.fedoraproject.org/streams/stable.json"| jq '.architectures.x86_64.artifacts.qemu.release')
-PLATEFORM=qemu
-BASEURL=https://builds.coreos.fedoraproject.org
+JSON=$(curl -s "https://builds.coreos.fedoraproject.org/streams/${STREAMS}.json")
+VERSION=$(echo ${JSON} | jq -r ".architectures.x86_64.artifacts.${PLATFORM}.release")
+IMAGE_URL=$(echo ${JSON} | jq -r ".architectures.x86_64.artifacts.${PLATFORM}.formats.\"qcow2.xz\".disk.location")
+IMAGE_NAME_XZ="fedora-coreos-${VERSION}-${PLATFORM}.x86_64.qcow2.xz"
+IMAGE_NAME="fedora-coreos-${VERSION}-${PLATFORM}.x86_64.qcow2"
 
 # =============================================================================================
 # main()
@@ -69,11 +72,10 @@ case "$(pvesh get /storage/${TEMPLATE_VMSTORAGE} --noborder --noheader | grep ^t
 esac
 
 # download fcos vdisk
-[[ ! -e fedora-coreos-${VERSION}-${PLATEFORM}.x86_64.qcow2 ]]&& {
+[[ ! -e ${IMAGE_NAME} ]] && {
     echo "Download fedora coreos..."
-    wget -q --show-progress \
-        ${BASEURL}/prod/streams/${STREAMS}/builds/${VERSION}/x86_64/fedora-coreos-${VERSION}-${PLATEFORM}.x86_64.qcow2.xz
-    xz -dv fedora-coreos-${VERSION}-${PLATEFORM}.x86_64.qcow2.xz
+    wget -q --show-progress ${IMAGE_URL} -O ${IMAGE_NAME_XZ}
+    xz -dv ${IMAGE_NAME_XZ}
 }
 
 # create a new VM
@@ -113,7 +115,7 @@ else
 	vmdisk_name="vm-${TEMPLATE_VMID}-disk-0"
         vmdisk_format=""
 fi
-qm importdisk ${TEMPLATE_VMID} fedora-coreos-${VERSION}-${PLATEFORM}.x86_64.qcow2 ${TEMPLATE_VMSTORAGE} ${vmdisk_format}
+qm importdisk ${TEMPLATE_VMID} ${IMAGE_NAME} ${TEMPLATE_VMSTORAGE} ${vmdisk_format}
 qm set ${TEMPLATE_VMID} --scsihw virtio-scsi-pci --scsi0 ${TEMPLATE_VMSTORAGE}:${vmdisk_name}${VMDISK_OPTIONS}
 
 # set hook-script
