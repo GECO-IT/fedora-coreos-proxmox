@@ -10,6 +10,11 @@ set -e
 export LANG=C
 export LC_ALL=C
 
+# Install dependencies
+if [[ ! -f $(which jq) ]]; then apt install jq -y; fi
+if [[ ! -f $(which yq) ]]; then apt install yq -y; fi
+
+ 
 # template vm vars
 TEMPLATE_VMID="900"
 TEMPLATE_VMSTORAGE="local"

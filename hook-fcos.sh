@@ -1,14 +1,14 @@
 #!/bin/bash
 
 #set -e
- 
+
 vmid="$1"
 phase="$2"
 
 # global vars
 COREOS_TMPLT=/opt/fcos-tmplt.yaml
 COREOS_FILES_PATH=/etc/pve/geco-pve/coreos
-YQ="/usr/local/bin/yq read --exitStatus --printMode v --stripComments --"
+YQ="yq read --exitStatus --printMode v --stripComments --"
 
 # ==================================================================================================================================================================
 # functions()
@@ -27,9 +27,6 @@ setup_fcoreosct()
         chmod 755 /usr/local/bin/fcos-ct
 }
 setup_fcoreosct
-
-if [[ ! -f $(which jq) ]]; then apt install jq -y; fi
-if [[ ! -f $(which yq) ]]; then apt install yq -y; fi
 
 # ==================================================================================================================================================================
 # main()
