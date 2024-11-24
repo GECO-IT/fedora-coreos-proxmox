@@ -1,14 +1,14 @@
 #!/bin/bash
 
 #set -e
-
+ 
 vmid="$1"
 phase="$2"
 
 # global vars
 COREOS_TMPLT=/opt/fcos-tmplt.yaml
 COREOS_FILES_PATH=/etc/pve/geco-pve/coreos
-YQ="yq read --exitStatus --printMode v --stripComments --"
+YQ="/usr/local/bin/yq read --exitStatus --printMode v --stripComments --"
 
 # ==================================================================================================================================================================
 # functions()
@@ -27,6 +27,19 @@ setup_fcoreosct()
         chmod 755 /usr/local/bin/fcos-ct
 }
 setup_fcoreosct
+
+setup_yq()
+{
+        local VER=3.4.1
+
+        [[ -x /usr/bin/wget ]]&& download_command="wget --quiet --show-progress --output-document"  || download_command="curl --location --output"
+        [[ -x /usr/local/bin/yq ]]&& [[ "x$(/usr/local/bin/yq --version | awk '{print $NF}')" == "x${VER}" ]]&& return 0
+        echo "Setup yaml parser tools yq..."
+        rm -f /usr/local/bin/yq
+        ${download_command} /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/${VER}/yq_linux_amd64
+        chmod 755 /usr/local/bin/yq
+}
+setup_yq
 
 # ==================================================================================================================================================================
 # main()
